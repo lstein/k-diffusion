@@ -20,6 +20,6 @@ setup(
         'torchvision',
         'tqdm',
         'wandb',
-        'git+https://github.com/openai/CLIP.git@main#egg=clip'
+        'clip>=1.0 git+https://github.com/openai/CLIP.git@main#egg=clip'
     ]
 )
