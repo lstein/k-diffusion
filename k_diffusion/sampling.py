@@ -181,19 +181,23 @@ def linear_multistep_coeff(order, t, i, j):
 def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, order=4):
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
-    ds = []
+    ds   = []
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        d = to_d(x, sigmas[i], denoised)
-        ds.append(d)
-        if len(ds) > order:
-            ds.pop(0)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        cur_order = min(i + 1, order)
-        coeffs = [linear_multistep_coeff(cur_order, sigmas.cpu(), i, j) for j in range(cur_order)]
-        x = x + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
+        x = self._lms(model,x,sigmas,i,s_in,ds,order,callback,**extra_args)
     return x
+
+def _lms(model,x,sigmas,index,s_in,ds=None,callback=None,extra_args=None,order=4):
+    assert ds   is not None,"k_diffusion._ldm(): the ds parameter must contain an array"
+    denoised = model(x, sigmas[index] * s_in, **extra_args)
+    d = to_d(x, sigmas[index], denoised)
+    ds.append(d)
+    if len(ds) > order:
+        ds.pop(0)
+    if callback is not None:
+        callback({'x': x, 'i': index, 'sigma': sigmas[index], 'sigma_hat': sigmas[index], 'denoised': denoised})
+    cur_order = min(index + 1, order)
+    coeffs = [linear_multistep_coeff(cur_order, sigmas.cpu(), index, j) for j in range(cur_order)]
+    return x + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
 
 
 @torch.no_grad()
