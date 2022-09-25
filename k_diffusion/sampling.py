@@ -53,19 +53,50 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
-        sigma_hat = sigmas[i] * (gamma + 1)
-        if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
-        denoised = model(x, sigma_hat * s_in, **extra_args)
-        d = to_d(x, sigma_hat, denoised)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        dt = sigmas[i + 1] - sigma_hat
-        # Euler method
-        x = x + d * dt
+        x = _euler(
+            model=model,
+            x=x,
+            sigmas=sigmas,
+            i=i,
+            s_in=s_in,
+            callback=callback,
+            s_churn=s_churn,
+            s_tmin=s_tmin,
+            s_tmax = s_tmax,
+            s_noise=s_noise,
+            extra_args=extra_args,
+        )
     return x
+
+# DO NOT RENAME THE ROUTINES THAT START WITH _
+def _euler(
+        model,
+        x,
+        sigmas,
+        index,
+        s_in,
+        callback=None,
+        s_churn=0,
+        s_tmin=0,
+        s_tmax=float('inf'),
+        s_noise=1.,
+        extra_args=None,
+        **kwargs,
+    ):
+    if i >= len(sigmas)-1:
+        return x
+    gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[index] <= s_tmax else 0.
+    eps = torch.randn_like(x) * s_noise
+    sigma_hat = sigmas[index] * (gamma + 1)
+    if gamma > 0:
+        x = x + eps * (sigma_hat ** 2 - sigmas[index] ** 2) ** 0.5
+    denoised = model(x, sigma_hat * s_in, **extra_args)
+    d = to_d(x, sigma_hat, denoised)
+    if callback is not None:
+        callback({'x': x, 'i': index, 'sigma': sigmas[index], 'sigma_hat': sigma_hat, 'denoised': denoised})
+    dt = sigmas[index + 1] - sigma_hat
+    # Euler method
+    return x + d * dt
 
 
 @torch.no_grad()
@@ -74,16 +105,21 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        d = to_d(x, sigmas[i], denoised)
-        # Euler method
-        dt = sigma_down - sigmas[i]
-        x = x + d * dt
-        x = x + torch.randn_like(x) * sigma_up
+       x = _euler_ancestral(model,x,sigmas,i,s_in,extra_args,callback,disable)
     return x
+
+def _euler_ancestral(model,x,sigmas,i,s_in,extra_args,callback=None,disable=None,**kwargs):
+    if i >= len(sigmas)-1:
+        return x
+    denoised = model(x, sigmas[i] * s_in, **extra_args)
+    sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
+    if callback is not None:
+        callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+    d = to_d(x, sigmas[i], denoised)
+    # Euler method
+    dt = sigma_down - sigmas[i]
+    x = x + d * dt
+    return x + torch.randn_like(x) * sigma_up
 
 
 @torch.no_grad()
@@ -92,28 +128,46 @@ def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, 
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
-        sigma_hat = sigmas[i] * (gamma + 1)
-        if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
-        denoised = model(x, sigma_hat * s_in, **extra_args)
-        d = to_d(x, sigma_hat, denoised)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        dt = sigmas[i + 1] - sigma_hat
-        if sigmas[i + 1] == 0:
-            # Euler method
-            x = x + d * dt
-        else:
-            # Heun's method
-            x_2 = x + d * dt
-            denoised_2 = model(x_2, sigmas[i + 1] * s_in, **extra_args)
-            d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
-            d_prime = (d + d_2) / 2
-            x = x + d_prime * dt
+        x = _heun(model, x, sigmas, i, s_in, extra_args, callback, disable, s_churn, s_tmin, s_tmax, s_noise)
     return x
 
+def _heun(
+        model,
+        x,
+        sigmas,
+        i,
+        s_in,
+        extra_args=None,
+        callback=None,
+        disable=None,
+        s_churn=0.,
+        s_tmin=0.,
+        s_tmax=float('inf'),
+        s_noise=1,
+        **kwargs):
+    if i >= len(sigmas)-1:
+        return x
+    gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
+    eps = torch.randn_like(x) * s_noise
+    sigma_hat = sigmas[i] * (gamma + 1)
+    if gamma > 0:
+        x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+    denoised = model(x, sigma_hat * s_in, **extra_args)
+    d = to_d(x, sigma_hat, denoised)
+    if callback is not None:
+        callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
+    dt = sigmas[i + 1] - sigma_hat
+    if sigmas[i + 1] == 0:
+        # Euler method
+        x = x + d * dt
+    else:
+        # Heun's method
+        x_2 = x + d * dt
+        denoised_2 = model(x_2, sigmas[i + 1] * s_in, **extra_args)
+        d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
+        d_prime = (d + d_2) / 2
+        x = x + d_prime * dt
+    return x
 
 @torch.no_grad()
 def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
@@ -121,24 +175,30 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
-        sigma_hat = sigmas[i] * (gamma + 1)
-        if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
-        denoised = model(x, sigma_hat * s_in, **extra_args)
-        d = to_d(x, sigma_hat, denoised)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        # Midpoint method, where the midpoint is chosen according to a rho=3 Karras schedule
-        sigma_mid = ((sigma_hat ** (1 / 3) + sigmas[i + 1] ** (1 / 3)) / 2) ** 3
-        dt_1 = sigma_mid - sigma_hat
-        dt_2 = sigmas[i + 1] - sigma_hat
-        x_2 = x + d * dt_1
-        denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
-        d_2 = to_d(x_2, sigma_mid, denoised_2)
-        x = x + d_2 * dt_2
+        x = _dpm_2(model, x, i, sigmas, s_in, extra_args, callback, disable, s_churn, s_tmin, s_tmax, s_noise)
     return x
+
+@torch.no_grad()
+def _dpm_2(model, x, sigmas, i, s_in, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.,**kwargs):
+    if i >= len(sigmas)-1:
+        return x
+    gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
+    eps = torch.randn_like(x) * s_noise
+    sigma_hat = sigmas[i] * (gamma + 1)
+    if gamma > 0:
+        x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+    denoised = model(x, sigma_hat * s_in, **extra_args)
+    d = to_d(x, sigma_hat, denoised)
+    if callback is not None:
+        callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
+    # Midpoint method, where the midpoint is chosen according to a rho=3 Karras schedule
+    sigma_mid = ((sigma_hat ** (1 / 3) + sigmas[i + 1] ** (1 / 3)) / 2) ** 3
+    dt_1 = sigma_mid - sigma_hat
+    dt_2 = sigmas[i + 1] - sigma_hat
+    x_2 = x + d * dt_1
+    denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
+    d_2 = to_d(x_2, sigma_mid, denoised_2)
+    return x + d_2 * dt_2
 
 
 @torch.no_grad()
@@ -147,22 +207,27 @@ def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        d = to_d(x, sigmas[i], denoised)
-        # Midpoint method, where the midpoint is chosen according to a rho=3 Karras schedule
-        sigma_mid = ((sigmas[i] ** (1 / 3) + sigma_down ** (1 / 3)) / 2) ** 3
-        dt_1 = sigma_mid - sigmas[i]
-        dt_2 = sigma_down - sigmas[i]
-        x_2 = x + d * dt_1
-        denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
-        d_2 = to_d(x_2, sigma_mid, denoised_2)
-        x = x + d_2 * dt_2
-        x = x + torch.randn_like(x) * sigma_up
+        x = _dpm_2_ancestral(model, x, sigmas, i, s_in, extra_args, callback, disable)
     return x
 
+@torch.no_grad()
+def _dpm_2_ancestral(model, x, sigmas, i, s_in, extra_args, callback=None, disable=None,**kwargs):
+    if i >= len(sigmas)-1:
+        return x
+    denoised = model(x, sigmas[i] * s_in, **extra_args)
+    sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
+    if callback is not None:
+        callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+    d = to_d(x, sigmas[i], denoised)
+    # Midpoint method, where the midpoint is chosen according to a rho=3 Karras schedule
+    sigma_mid = ((sigmas[i] ** (1 / 3) + sigma_down ** (1 / 3)) / 2) ** 3
+    dt_1 = sigma_mid - sigmas[i]
+    dt_2 = sigma_down - sigmas[i]
+    x_2 = x + d * dt_1
+    denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
+    d_2 = to_d(x_2, sigma_mid, denoised_2)
+    x = x + d_2 * dt_2
+    return x + torch.randn_like(x) * sigma_up
 
 def linear_multistep_coeff(order, t, i, j):
     if order - 1 > i:
@@ -183,11 +248,23 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
     s_in = x.new_ones([x.shape[0]])
     ds   = []
     for i in trange(len(sigmas) - 1, disable=disable):
-        x = self._lms(model,x,sigmas,i,s_in,ds,order,callback,**extra_args)
+        x = _lms(model,x,sigmas,i,s_in,ds,order,callback,**extra_args)
     return x
 
-def _lms(model,x,sigmas,index,s_in,ds=None,callback=None,extra_args=None,order=4):
-    assert ds   is not None,"k_diffusion._ldm(): the ds parameter must contain an array"
+def _lms(
+        model,
+        x,
+        sigmas,
+        index,
+        s_in,
+        ds,
+        callback=None,
+        extra_args=None,
+        order=4,
+        **kwargs,
+):
+    if index >= len(sigmas)-1:
+        return x
     denoised = model(x, sigmas[index] * s_in, **extra_args)
     d = to_d(x, sigmas[index], denoised)
     ds.append(d)
