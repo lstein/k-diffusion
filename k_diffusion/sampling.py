@@ -57,7 +57,7 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
             model=model,
             x=x,
             sigmas=sigmas,
-            i=i,
+            index=i,
             s_in=s_in,
             callback=callback,
             s_churn=s_churn,
@@ -83,7 +83,7 @@ def _euler(
         extra_args=None,
         **kwargs,
     ):
-    if i >= len(sigmas)-1:
+    if index >= len(sigmas)-1:
         return x
     gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[index] <= s_tmax else 0.
     eps = torch.randn_like(x) * s_noise
@@ -175,7 +175,7 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
-        x = _dpm_2(model, x, i, sigmas, s_in, extra_args, callback, disable, s_churn, s_tmin, s_tmax, s_noise)
+        x = _dpm_2(model, x, sigmas, i, s_in, extra_args, callback, disable, s_churn, s_tmin, s_tmax, s_noise)
     return x
 
 @torch.no_grad()
@@ -248,7 +248,7 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
     s_in = x.new_ones([x.shape[0]])
     ds   = []
     for i in trange(len(sigmas) - 1, disable=disable):
-        x = _lms(model,x,sigmas,i,s_in,ds,order,callback,**extra_args)
+        x = _lms(model,x,sigmas,i,s_in,ds,callback,order=order,extra_args=extra_args)
     return x
 
 def _lms(
@@ -261,7 +261,6 @@ def _lms(
         callback=None,
         extra_args=None,
         order=4,
-        **kwargs,
 ):
     if index >= len(sigmas)-1:
         return x
